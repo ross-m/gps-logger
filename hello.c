@@ -43,6 +43,18 @@
 #define UARTIBRD_B_R *(volatile uint32_t *) 0x4000D024 // integer piece
 #define UARTFBRD_B_R *(volatile uint32_t *) 0x4000D028 // fraction piece
 
+// UART Interrupt setup
+#define UARTIM_B_R *(volatile uint32_t *) 0x4000D000 // UART1 Interrupt mask enable 
+#define RXIM 0x20 // Receive interrupt mask
+#define UARTIFLS_B_R *(volatile uint32_t *) 0x4000D034 // UART1 FIFO interrupt trigger level 
+#define NVIC_EN0_R *(volatile uint32_t *) 0xE000E100 // NVIC EN0 register
+#define UART1_RXEN 0x40 // UART1 RX interrupt
+
+void UART1_handler(void)
+{
+
+}
+
 int main(void)
 {
     // Enable UART module 1
@@ -89,6 +101,15 @@ int main(void)
 
     // Set UART clock to sys clock
     UARTCC_B_R = 0x0;
+
+    // Enable the RX interrupt 
+    UARTIM_B_R |= RXIM;
+
+    // Trigger RX interrupts when the input buffer is 1/8 full (every 2 bytes). As a side effect TX is also triggered at this fill level, but doesn't matter because we're not enabling that interrupt
+    UARTIFLS_B_R &= ~0x3F; 
+
+    // Enable interrupts for UART1 receive in the interrupt controller
+    NVIC_EN0_R |= UART1_RXEN;
 
     UARTCTL_B_R |= UART_FEN_EN; // enable UART
 }
