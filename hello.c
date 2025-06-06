@@ -1,5 +1,5 @@
-#include <stdint.h>
-#include <stdbool.h>
+#include <SysTick.h>
+#include <string.h>
 
 // AHB enable register
 #define SYSCTL_GPIOHBCTL_R *(volatile uint32_t*) 0x400FE06C 
@@ -53,159 +53,214 @@
 #define UARTFBRD_B_R *(volatile uint32_t *) 0x4000D028 // fraction piece
 
 // UART Interrupt setup
-#define UARTIM_B_R *(volatile uint32_t *) 0x4000D000 // UART1 Interrupt mask enable 
+#define UARTIM_B_R *(volatile uint32_t *) 0x4000D038 // UART1 Interrupt mask enable 
 #define RXIM 0x20 // Receive interrupt mask
 #define UARTIFLS_B_R *(volatile uint32_t *) 0x4000D034 // UART1 FIFO interrupt trigger level 
 #define NVIC_EN0_R *(volatile uint32_t *) 0xE000E100 // NVIC EN0 register
 #define UART1_RXEN 0x40 // UART1 RX interrupt
+#define UARTICR_B_R *(volatile uint32_t *) 0x4000D044 // interrupt clear register
 
 // FIFO registers
 #define UARTFR_0_R *(volatile uint32_t *) 0x4000C018
 #define UARTDR_0_R *(volatile uint32_t *) 0x4000C000
+#define UARTFR_1_R *(volatile uint32_t *) 0x4000D018
+#define UARTDR_1_R *(volatile uint32_t *) 0x4000D000
 
 // Peripheral status registers
 #define PRUART_R *(volatile uint32_t *) 0x400FEA18
 #define PRGPIO_R *(volatile uint32_t *) 0x400FEA08
 
+#define STCTRL *(volatile uint32_t*) 0xE000E010 // control register for the SysTick timer
+#define STRELOAD *(volatile uint32_t*) 0xE000E014 // the reload value. this is how many clock cycles elapse before it is reset
+#define STCURRENT *(volatile uint32_t*) 0xE000E018 // the value of the register currently. writes clear the register and the count status bit
+#define COUNTMASK 0x00010000 // Access the 16th bit (count bit) of STCTRL
+#define CYCLESPMS 16000 // 16,000,000 cycles per second * 0.001 seconds per millisecond
+#define MAXCYCLES 0xFFFFFF // number of cycles we can represent with 23 bits
+
 void UART1_handler(void)
 {
-    // Enable UART module 0
-    RCGCUART_R |= 0x1;
+        uint8_t junk_byte;
 
-    // Enable clock for GPIO port A
-    RCGCGPIO_R |= 0x1;
+        while (!(UARTFR_1_R & 0x10))
+        {
+            junk_byte = UARTDR_1_R; // clear the input buffer
+        } 
 
-    // Enable alternate function for pins 0 and 1 on port A
-    GPIOAFSEL_A_R |= 0x3;
+        // drop sentence in byte by byte
+        char* hello = "hello world!\r\n\0";
+        
+        while (*hello != '\0')
+        {
+            while (UARTFR_0_R & 0x20); // wait until transmit FIFO empty
+
+            UARTDR_0_R = *hello;
+
+            hello++;
+        }
+
+        UARTICR_B_R |= 0x10;
+}
+
+void init_gps(void)
+{
+    // Enable UART module 1
+    RCGCUART_R |= 0x2;
+
+    // Enable clock for GPIO port B
+    RCGCGPIO_R |= 0x2;
+
+    // Enable AHB
+    SYSCTL_GPIOHBCTL_R |= 0x2;
+    delayByMs(50);
+
+    // Enable digital function for pins 0 and 1 on GPIO port B
+    GPIODEN_B_R |= 0x3;
+
+    // Select alternate function for PB0 and PB1
+    GPIOAFSEL_B_R |= 0x3;
+
+    // Set pins 0 and 1 to 2mA drive
+    GPIODR2R_B_R |= 0x3;
+
+    // Select UART peripheral signal for PB0 and PB1
+    GPIOPCTL_B_R &= ~0xFF;
+    GPIOPCTL_B_R |= 0x11;
+
+    UARTCTL_B_R &= ~0x1; // disable UART
+
+    // flush FIFO in UARTLCRH
+    UARTLCRH_B_R &= ~0x10;
+
+    // Set the baud rate to 115200
+    UARTCTL_B_R &= ~0x20; // Set ClkDiv to 16
+    UARTIBRD_B_R = 8;
+    UARTFBRD_B_R = 44;
+
+    // Set UART clock to sys clock
+    UARTCC_B_R = 0x0;
+
+    // Enable the RX interrupt 
+    UARTIM_B_R |= 0x10;
+
+    // Trigger RX interrupts when the input buffer is 1/8 full (every 2 bytes). As a side effect TX is also triggered at this fill level, but doesn't matter because we're not enabling that interrupt
+    UARTIFLS_B_R &= ~0x3F; 
+
+    // Enable interrupts for UART1 receive in the interrupt controller
+    NVIC_EN0_R |= UART1_RXEN;
+
+    // Set word length to 8 bits, and re-enable FIFO
+    UARTLCRH_B_R |= 0x70;
+
+    UARTCTL_B_R |= 0x301; // enable UART
 }
 
 void init_serial_output(void)
 {
     // Enable UART module 0
     RCGCUART_R |= 0x1;
-
+    
     // Enable clock for GPIO port A
     RCGCGPIO_R |= 0x1;
 
-    while (!(PRUART_R & 0x1) || !(PRGPIO_R & 0x1)); // Wait until UART0 and GPIO Port A are ready
-
+    // Enable AHB
     SYSCTL_GPIOHBCTL_R |= 0x1;
-
+    delayByMs(50);
+    
     // Enable digital function for port A pins 0/1
     GPIODEN_A_R |= 0x3;
-
+    
     // Enable alternate function for port A pins 0/1
     GPIOAFSEL_A_R |= 0x3;
-
+    
     // Set port A pins 0/1 to 2 mA drive strength
     GPIODR2R_A_R |= 0x3;
-
+    
     // Assign RX/TX signals to port A pins 0/1
     GPIOPCTL_A_R &= ~0xFF;
     GPIOPCTL_A_R |= 0x11;
-
+    
     // Disable UART for configuration
     UARTCTL_A_R &= ~0x1;
-
+    
     // Flush FIFO
     UARTLCRH_A_R &= ~0x10;
-
+    
     // Set baud rate to 115200
     UARTIBRD_A_R = 8;
     UARTFBRD_A_R = 44;
     UARTCTL_A_R &= ~0x20; // set ClkDiv to 16
-
+    
     // Enable FIFO
     UARTLCRH_A_R |= 0x70;
-
+    
     // Set clock source to system clock
     UARTCC_A_R = 0;
-
+    
     // Re-enable UART for transmission
     UARTCTL_A_R |= 0x301;
-
-    int i = 0;
-    while (i < 10000)
-    {
-        i++;
-    }
-
-    char* helloStr = "Hello World!\r\n\0";
-
-    while (true) // send forever
-    {
-        char* helloPtr = helloStr;
-
-        while (*helloPtr != '\0')
-        {
-            while (UARTFR_0_R & 0x20); // wait until FIFO has room
-
-            UARTDR_0_R = *helloPtr;
-
-            helloPtr++;
-        }
-    }
 }
 
 int main(void)
 {
+    init_gps();
     init_serial_output();
-    // // Enable UART module 1
-    // RCGCUART_R |= 0x2;
+    // uint8_t gps_byte;
+    // bool capturing = false;
+    // bool doneCapturing = false;
+    // uint8_t NMEA_buffer[128];
+    // uint8_t idx = 0;
+    // uint8_t* NMEA_ptr;
 
-    // // Enable clock for GPIO port B
-    // RCGCGPIO_R |= 0x2;
+    // while (true)
+    // {
+    //     do {
+    //         // read until we get the full sentence
+    //         while (!(UARTFR_1_R | 0x40)); // Wait until receive FIFO full
+            
+    //         gps_byte = UARTDR_1_R; // Ignoring error bits for now
 
-    // // wait 3 cycles (quick and dirty)
-    // int i;
-    // for (i=0;i<3000;i++)
-    // {}
+    //         if (gps_byte == '$' && !capturing)
+    //         {
+    //             memset(NMEA_buffer, 0, sizeof(NMEA_buffer));
+    //             capturing = true;
+    //             NMEA_buffer[idx++] = gps_byte;
+    //         }
+    //         else if (capturing)
+    //         {
+    //             if (gps_byte == '\r')
+    //             {
+    //                 while (!(UARTFR_1_R & 0x40)); // Wait until receive FIFO full
+                    
+    //                 gps_byte = UARTDR_1_R; // Ignoring error bits for now
 
-    // // Enable AHB
-    // SYSCTL_GPIOHBCTL_R |= 0x20;
+    //                 if (gps_byte == '\n')
+    //                 {
+    //                     capturing = false;
+    //                     doneCapturing = true;
+    //                     NMEA_buffer[idx++] = '\0';
+    //                     idx=0;
+    //                 }
+    //             }
+                
+    //             else 
+    //             {
+    //                 NMEA_buffer[idx++] = gps_byte;
+    //             }
+    //         }
+    //     } while (!doneCapturing);
+        
+    //     doneCapturing = false;
 
-    // // Enable digital function for pins 0 and 1 on GPIO port B
-    // GPIODEN_B_R |= 0x3;
+    //     NMEA_ptr = NMEA_buffer;
+        
+    //     // drop sentence in byte by byte
+    //     while (*NMEA_ptr != '\0')
+    //     {
+    //         while (UARTFR_0_R & 0x20); // wait until transmit FIFO empty
 
-    // // Select alternate function for PB0 and PB1
-    // GPIOAFSEL_B_R |= UART1_RX;
-    // GPIOAFSEL_B_R |= UART1_TX;
+    //         UARTDR_0_R = *NMEA_ptr;
 
-    // // Set pins 0 and 1 to 2mA drive
-    // GPIODR2R_B_R |= 0x3;
-
-    // // Select UART peripheral signal for PB0 and PB1
-    // GPIOPCTL_B_R &= ~0xFF;
-    // GPIOPCTL_B_R |= PMC0_UART | PMC1_UART;
-
-    // UARTCTL_B_R &= ~(0x1); // disable UART
-
-    // // flush FIFO in UARTLCRH
-    // UARTLCRH_B_R &= UART_FEN_DI;
-
-    // // Enable transmit and receive
-    // UARTCTL_B_R |= RXE_B;
-    // UARTCTL_B_R |= TXE_B;
-
-    // // Set the baud rate to 115200
-    // UARTCTL_B_R &= ~0x20; // Set ClkDiv to 16
-    // UARTIBRD_B_R = 8;
-    // UARTFBRD_B_R = 44;
-
-    // // Set UART clock to sys clock
-    // UARTCC_B_R = 0x0;
-
-    // // Enable the RX interrupt 
-    // UARTIM_B_R |= RXIM;
-
-    // // Trigger RX interrupts when the input buffer is 1/8 full (every 2 bytes). As a side effect TX is also triggered at this fill level, but doesn't matter because we're not enabling that interrupt
-    // UARTIFLS_B_R &= ~0x3F; 
-
-    // // Enable interrupts for UART1 receive in the interrupt controller
-    // NVIC_EN0_R |= UART1_RXEN;
-
-    // // Re-enable FIFO after flush
-    // UARTLCRH_B_R |= 0x10;
-
-    // UARTCTL_B_R |= UART_FEN_EN; // enable UART
+    //         NMEA_ptr++;
+    //     }
+    // }
 }
