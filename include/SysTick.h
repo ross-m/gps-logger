@@ -1,7 +1,6 @@
 #ifndef SYSTICK_REG
 #define SYSTICK_REG
-#include <stdint.h>
-#include <stdbool.h>
+#include <sys_defs.h>
 
 #define STCTRL *(volatile uint32_t*) 0xE000E010 // control register for the SysTick timer
 #define STRELOAD *(volatile uint32_t*) 0xE000E014 // the reload value. this is how many clock cycles elapse before it is reset

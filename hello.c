@@ -1,5 +1,5 @@
 #include <SysTick.h>
-#include <string.h>
+#include <buffer.h>
 
 // AHB enable register
 #define SYSCTL_GPIOHBCTL_R *(volatile uint32_t*) 0x400FE06C 
@@ -77,28 +77,45 @@
 #define CYCLESPMS 16000 // 16,000,000 cycles per second * 0.001 seconds per millisecond
 #define MAXCYCLES 0xFFFFFF // number of cycles we can represent with 23 bits
 
+static stream_buffer buf;
+
 void UART1_handler(void)
 {
-        uint8_t junk_byte;
+    static bool capturing = false;
+    uint8_t next_byte;
 
-        while (!(UARTFR_1_R & 0x10))
+    while (!buf.ready && !(UARTFR_1_R & 0x10))
+    {
+        next_byte = UARTDR_1_R; 
+
+        if (capturing)
         {
-            junk_byte = UARTDR_1_R; // clear the input buffer
-        } 
-
-        // drop sentence in byte by byte
-        char* hello = "hello world!\r\n\0";
-        
-        while (*hello != '\0')
-        {
-            while (UARTFR_0_R & 0x20); // wait until transmit FIFO empty
-
-            UARTDR_0_R = *hello;
-
-            hello++;
+            if (next_byte == '\n')
+            {
+                capturing = false;
+                buf.ready = true;
+            }
+            else 
+            {
+                if (enqueue_byte(&buf, next_byte) == 0)
+                {
+                    enqueue_byte(&buf, '\r');
+                    enqueue_byte(&buf, '\0');
+                    capturing = false;
+                    buf.ready = true;
+                }
+            }
         }
+        else if (next_byte == '$')
+        {
+            if (enqueue_byte(&buf, next_byte) == 0)
+            {
+                capturing = true;
+            }
+        }
+    } 
 
-        UARTICR_B_R |= 0x10;
+    UARTICR_B_R |= 0x10;
 }
 
 void init_gps(void)
@@ -200,67 +217,51 @@ void init_serial_output(void)
     UARTCTL_A_R |= 0x301;
 }
 
+void enable_gps_interrupt(void)
+{
+    UARTIM_B_R |= 0x10;
+}
+
+void disable_gps_interrupt(void)
+{
+    UARTIM_B_R &= ~0x10;
+}
+
 int main(void)
 {
+    init_buffer(&buf);
     init_gps();
     init_serial_output();
-    // uint8_t gps_byte;
-    // bool capturing = false;
-    // bool doneCapturing = false;
-    // uint8_t NMEA_buffer[128];
-    // uint8_t idx = 0;
-    // uint8_t* NMEA_ptr;
 
-    // while (true)
-    // {
-    //     do {
-    //         // read until we get the full sentence
-    //         while (!(UARTFR_1_R | 0x40)); // Wait until receive FIFO full
-            
-    //         gps_byte = UARTDR_1_R; // Ignoring error bits for now
+    uint8_t sentence[128];
+    uint8_t *sentence_lead;
 
-    //         if (gps_byte == '$' && !capturing)
-    //         {
-    //             memset(NMEA_buffer, 0, sizeof(NMEA_buffer));
-    //             capturing = true;
-    //             NMEA_buffer[idx++] = gps_byte;
-    //         }
-    //         else if (capturing)
-    //         {
-    //             if (gps_byte == '\r')
-    //             {
-    //                 while (!(UARTFR_1_R & 0x40)); // Wait until receive FIFO full
-                    
-    //                 gps_byte = UARTDR_1_R; // Ignoring error bits for now
+    while (1)
+    {
+        if (buf.ready)
+        {
+            disable_gps_interrupt();
 
-    //                 if (gps_byte == '\n')
-    //                 {
-    //                     capturing = false;
-    //                     doneCapturing = true;
-    //                     NMEA_buffer[idx++] = '\0';
-    //                     idx=0;
-    //                 }
-    //             }
-                
-    //             else 
-    //             {
-    //                 NMEA_buffer[idx++] = gps_byte;
-    //             }
-    //         }
-    //     } while (!doneCapturing);
-        
-    //     doneCapturing = false;
+            memset(sentence, 0, 128);
+            memcpy(sentence, buf.buffer, buf.idx);
+            reset_buffer(&buf);
 
-    //     NMEA_ptr = NMEA_buffer;
-        
-    //     // drop sentence in byte by byte
-    //     while (*NMEA_ptr != '\0')
-    //     {
-    //         while (UARTFR_0_R & 0x20); // wait until transmit FIFO empty
+            enable_gps_interrupt();
 
-    //         UARTDR_0_R = *NMEA_ptr;
+            sentence_lead = sentence;  // Start printing in next iteration
+        }
 
-    //         NMEA_ptr++;
-    //     }
-    // }
+        if (sentence_lead != NULL)
+        {
+            // Print to UART0 until newline
+            while (*sentence_lead != '\0')
+            {
+                while (UARTFR_0_R & 0x20); // Wait for TX FIFO to be not full
+
+                UARTDR_0_R = *sentence_lead++;
+            }
+
+            sentence_lead = NULL;  // Done with sentence
+        }
+    }
 }
