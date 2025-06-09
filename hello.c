@@ -77,43 +77,35 @@
 #define CYCLESPMS 16000 // 16,000,000 cycles per second * 0.001 seconds per millisecond
 #define MAXCYCLES 0xFFFFFF // number of cycles we can represent with 23 bits
 
+
+
+typedef struct 
+{
+    volatile uint8_t buffer[2048];
+    volatile size_t idx;
+    volatile size_t ready;
+} stream_buffer;
+
 static stream_buffer buf;
+
 
 void UART1_handler(void)
 {
-    static bool capturing = false;
-    uint8_t next_byte;
-
-    while (!buf.ready && !(UARTFR_1_R & 0x10))
+    while (!(UARTFR_1_R & 0x10))
     {
-        next_byte = UARTDR_1_R; 
-
-        if (capturing)
+        if (buf.idx < 2047)
         {
-            if (next_byte == '\n')
-            {
-                capturing = false;
-                buf.ready = true;
-            }
-            else 
-            {
-                if (enqueue_byte(&buf, next_byte) == 0)
-                {
-                    enqueue_byte(&buf, '\r');
-                    enqueue_byte(&buf, '\0');
-                    capturing = false;
-                    buf.ready = true;
-                }
-            }
+           buf.buffer[buf.idx++] = UARTDR_1_R;
         }
-        else if (next_byte == '$')
+        else 
         {
-            if (enqueue_byte(&buf, next_byte) == 0)
-            {
-                capturing = true;
-            }
+            UARTICR_B_R |= 0x10;
+            disable_gps_interrupt();
+            buf.buffer[buf.idx++] = '\0';
+            buf.ready = 1;
+            return;
         }
-    } 
+    }
 
     UARTICR_B_R |= 0x10;
 }
@@ -229,39 +221,68 @@ void disable_gps_interrupt(void)
 
 int main(void)
 {
-    init_buffer(&buf);
     init_gps();
     init_serial_output();
-
-    uint8_t sentence[128];
-    uint8_t *sentence_lead;
-
+    buf.ready = 0;
+    uint8_t *buf_reader = NULL;
     while (1)
     {
-        if (buf.ready)
+        while (buf.ready == 0);
+
+        buf_reader = buf.buffer;
+
+        while (*buf_reader != '\0')
         {
-            disable_gps_interrupt();
+            while (UARTFR_0_R & 0x20); // Wait for TX FIFO to be not full
 
-            memset(sentence, 0, 128);
-            memcpy(sentence, buf.buffer, buf.idx);
-            reset_buffer(&buf);
+            UARTDR_0_R = *buf_reader;
 
-            enable_gps_interrupt();
-
-            sentence_lead = sentence;  // Start printing in next iteration
+            buf_reader++;
         }
 
-        if (sentence_lead != NULL)
-        {
-            // Print to UART0 until newline
-            while (*sentence_lead != '\0')
-            {
-                while (UARTFR_0_R & 0x20); // Wait for TX FIFO to be not full
-
-                UARTDR_0_R = *sentence_lead++;
-            }
-
-            sentence_lead = NULL;  // Done with sentence
-        }
+        buf.ready = 0;
+        buf.idx = 0;
+        memset((void *)buf.buffer, 0, 2048);
+        enable_gps_interrupt();
     }
+
+    // uint8_t sentence[1024];
+    // uint8_t *sentence_lead;
+
+    // while (1)
+    // {
+    //     if (buf.ready)
+    //     {
+    //         disable_gps_interrupt();
+
+    //         memset(sentence, 0, 128);
+    //         int i;
+    //         for (i = 0;i < buf.idx;i++)
+    //         {
+    //             while (UARTFR_0_R & 0x20);
+
+    //             UARTDR_0_R = buf.buffer[i];
+    //         }
+    //         reset_buffer(&buf);
+
+    //         enable_gps_interrupt();
+
+    //         sentence_lead = sentence;  // Start printing in next iteration
+    //     }
+
+    //     if (sentence_lead != NULL)
+    //     {
+    //         // Print to UART0 until newline
+    //         while (*sentence_lead != '\0')
+    //         {
+    //             while (UARTFR_0_R & 0x20); // Wait for TX FIFO to be not full
+
+    //             UARTDR_0_R = *sentence_lead;
+
+    //             sentence_lead++;
+    //         }
+
+    //         sentence_lead = NULL;  // Done with sentence
+    //     }
+    // }
 }

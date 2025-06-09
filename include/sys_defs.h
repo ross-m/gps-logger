@@ -5,3 +5,4 @@
 #include <string.h>
 #endif
 
+void disable_gps_interrupt(void);
