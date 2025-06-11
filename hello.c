@@ -93,21 +93,45 @@ void UART1_handler(void)
 {
     while (!(UARTFR_1_R & 0x10))
     {
-        if (buf.idx < 2047)
-        {
-           buf.buffer[buf.idx++] = UARTDR_1_R;
-        }
-        else 
-        {
-            UARTICR_B_R |= 0x10;
-            disable_gps_interrupt();
-            buf.buffer[buf.idx++] = '\0';
-            buf.ready = 1;
-            return;
-        }
-    }
+        UARTDR_0_R = UARTDR_1_R; 
+    } 
 
     UARTICR_B_R |= 0x10;
+}
+
+void configure_gps_output(void)
+{
+    char* config[] = 
+    {
+        "$PAIR062,0,1*3F\r\n\0",
+        "$PAIR062,1,0*3F\r\n\0",
+        "$PAIR062,2,0*3C\r\n\0",
+        "$PAIR062,3,0*3D\r\n\0",
+        "$PAIR062,4,0*3A\r\n\0",
+        "$PAIR062,5,0*3B\r\n\0",
+        "$PAIR062,6,0*38\r\n\0",
+        "$PAIR062,7,0*39\r\n\0",
+        "$PAIR062,8,0*36\r\n\0",
+        "$PAIR062,9,0*37\r\n\0"
+    };
+
+    int i;
+    char* current_config;
+    for (i = 0;i < 10;i++)
+    {
+        current_config = config[i];
+
+        while (*current_config != '\0')
+        {
+            while (UARTFR_1_R & 0x20); // wait until room
+
+            UARTDR_1_R = (uint8_t)*current_config;
+
+            current_config++;
+        }
+
+        delayByMs(1);
+    }
 }
 
 void init_gps(void)
@@ -148,6 +172,9 @@ void init_gps(void)
     // Set UART clock to sys clock
     UARTCC_B_R = 0x0;
 
+    // Suppress all but GGA messages
+    configure_gps_output();
+
     // Enable the RX interrupt 
     UARTIM_B_R |= 0x10;
 
@@ -160,7 +187,8 @@ void init_gps(void)
     // Set word length to 8 bits, and re-enable FIFO
     UARTLCRH_B_R |= 0x70;
 
-    UARTCTL_B_R |= 0x301; // enable UART
+    // enable UART
+    UARTCTL_B_R |= 0x301; 
 }
 
 void init_serial_output(void)
@@ -225,64 +253,24 @@ int main(void)
     init_serial_output();
     buf.ready = 0;
     uint8_t *buf_reader = NULL;
-    while (1)
-    {
-        while (buf.ready == 0);
-
-        buf_reader = buf.buffer;
-
-        while (*buf_reader != '\0')
-        {
-            while (UARTFR_0_R & 0x20); // Wait for TX FIFO to be not full
-
-            UARTDR_0_R = *buf_reader;
-
-            buf_reader++;
-        }
-
-        buf.ready = 0;
-        buf.idx = 0;
-        memset((void *)buf.buffer, 0, 2048);
-        enable_gps_interrupt();
-    }
-
-    // uint8_t sentence[1024];
-    // uint8_t *sentence_lead;
-
     // while (1)
     // {
-    //     if (buf.ready)
+    //     while (buf.ready == 0);
+
+    //     buf_reader = buf.buffer;
+
+    //     while (*buf_reader != '\0')
     //     {
-    //         disable_gps_interrupt();
+    //         while (UARTFR_0_R & 0x20); // Wait for TX FIFO to be not full
 
-    //         memset(sentence, 0, 128);
-    //         int i;
-    //         for (i = 0;i < buf.idx;i++)
-    //         {
-    //             while (UARTFR_0_R & 0x20);
+    //         UARTDR_0_R = *buf_reader;
 
-    //             UARTDR_0_R = buf.buffer[i];
-    //         }
-    //         reset_buffer(&buf);
-
-    //         enable_gps_interrupt();
-
-    //         sentence_lead = sentence;  // Start printing in next iteration
+    //         buf_reader++;
     //     }
 
-    //     if (sentence_lead != NULL)
-    //     {
-    //         // Print to UART0 until newline
-    //         while (*sentence_lead != '\0')
-    //         {
-    //             while (UARTFR_0_R & 0x20); // Wait for TX FIFO to be not full
-
-    //             UARTDR_0_R = *sentence_lead;
-
-    //             sentence_lead++;
-    //         }
-
-    //         sentence_lead = NULL;  // Done with sentence
-    //     }
+    //     buf.ready = 0;
+    //     buf.idx = 0;
+    //     memset((void *)buf.buffer, 0, 2048);
+    //     enable_gps_interrupt();
     // }
 }
