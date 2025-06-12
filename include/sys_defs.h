@@ -3,6 +3,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <string.h>
+#include <stdio.h>
+#include "minmea.h"
 #endif
 
 void disable_gps_interrupt(void);

@@ -1,5 +1,4 @@
 #include <SysTick.h>
-#include <buffer.h>
 
 // AHB enable register
 #define SYSCTL_GPIOHBCTL_R *(volatile uint32_t*) 0x400FE06C 
@@ -77,23 +76,37 @@
 #define CYCLESPMS 16000 // 16,000,000 cycles per second * 0.001 seconds per millisecond
 #define MAXCYCLES 0xFFFFFF // number of cycles we can represent with 23 bits
 
-
-
-typedef struct 
-{
-    volatile uint8_t buffer[2048];
-    volatile size_t idx;
-    volatile size_t ready;
-} stream_buffer;
-
-static stream_buffer buf;
-
+static volatile bool ready = false;
+static volatile char sentence[128];
+static uint8_t idx = 0;
 
 void UART1_handler(void)
 {
-    while (!(UARTFR_1_R & 0x10))
+    static bool capturing = false;
+    static uint8_t next_byte;
+
+    while (!ready && !(UARTFR_1_R & 0x10))
     {
-        UARTDR_0_R = UARTDR_1_R; 
+        next_byte = UARTDR_1_R;
+
+        if (capturing) 
+        {
+            if (next_byte == '\n')
+            {
+                capturing = false;
+                ready = true;
+            }
+            else 
+            {
+                sentence[idx++] = (char)next_byte;
+            }
+        }
+        else if (next_byte == '$')
+        {
+            idx = 0;
+            sentence[idx++] = (char)next_byte;
+            capturing = true;
+        }
     } 
 
     UARTICR_B_R |= 0x10;
@@ -117,6 +130,8 @@ void configure_gps_output(void)
 
     int i;
     char* current_config;
+    volatile uint8_t discard;
+
     for (i = 0;i < 10;i++)
     {
         current_config = config[i];
@@ -130,7 +145,12 @@ void configure_gps_output(void)
             current_config++;
         }
 
-        delayByMs(1);
+        while (!(UARTFR_1_R & 0x80)); // wait until last byte sent
+
+        while (!(UARTFR_1_R & 0x10))
+        {
+            discard = UARTDR_1_R; // Discard the ACK
+        }
     }
 }
 
@@ -171,9 +191,6 @@ void init_gps(void)
 
     // Set UART clock to sys clock
     UARTCC_B_R = 0x0;
-
-    // Suppress all but GGA messages
-    configure_gps_output();
 
     // Enable the RX interrupt 
     UARTIM_B_R |= 0x10;
@@ -251,26 +268,38 @@ int main(void)
 {
     init_gps();
     init_serial_output();
-    buf.ready = 0;
-    uint8_t *buf_reader = NULL;
-    // while (1)
-    // {
-    //     while (buf.ready == 0);
+    disable_gps_interrupt();
+    configure_gps_output();
+    enable_gps_interrupt();
+    char parse_buffer[128];
+    char stream_buffer[128];
+    char* stream_ptr = NULL;
+    struct minmea_sentence_gga frame;
 
-    //     buf_reader = buf.buffer;
+    while (1)
+    {
+        while (ready == 0);
 
-    //     while (*buf_reader != '\0')
-    //     {
-    //         while (UARTFR_0_R & 0x20); // Wait for TX FIFO to be not full
+        // Critical section. Disable interrupts just in case.
+        disable_gps_interrupt();
+        memcpy((void*)parse_buffer, (void*)sentence, sizeof(sentence));
+        memset((void*)sentence, 0, sizeof(sentence));
+        ready = false;
+        enable_gps_interrupt();
 
-    //         UARTDR_0_R = *buf_reader;
+        if (minmea_parse_gga(&frame, parse_buffer))
+        {
+            snprintf(stream_buffer, sizeof(stream_buffer), "lat: %d, long: %d\r\n\0", frame.latitude.value, frame.longitude.value);
+            stream_ptr = stream_buffer;
 
-    //         buf_reader++;
-    //     }
+            while (*stream_ptr != '\0')
+            {
+                while (UARTFR_0_R & 0x20); // Wait for TX FIFO to be not full
 
-    //     buf.ready = 0;
-    //     buf.idx = 0;
-    //     memset((void *)buf.buffer, 0, 2048);
-    //     enable_gps_interrupt();
-    // }
+                UARTDR_0_R = *stream_ptr;
+
+                stream_ptr++;
+            }
+        }
+    }
 }
