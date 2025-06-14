@@ -78,7 +78,7 @@
 
 static volatile bool ready = false;
 static volatile char sentence[128];
-static uint8_t idx = 0;
+static volatile uint8_t idx = 0;
 
 void UART1_handler(void)
 {
@@ -93,6 +93,7 @@ void UART1_handler(void)
         {
             if (next_byte == '\n')
             {
+                sentence[idx++] = '\0';
                 capturing = false;
                 ready = true;
             }
@@ -192,7 +193,7 @@ void init_gps(void)
     // Set UART clock to sys clock
     UARTCC_B_R = 0x0;
 
-    // Enable the RX interrupt 
+    // // Enable the RX interrupt 
     UARTIM_B_R |= 0x10;
 
     // Trigger RX interrupts when the input buffer is 1/8 full (every 2 bytes). As a side effect TX is also triggered at this fill level, but doesn't matter because we're not enabling that interrupt
@@ -272,7 +273,6 @@ int main(void)
     configure_gps_output();
     enable_gps_interrupt();
     char parse_buffer[128];
-    char stream_buffer[128];
     char* stream_ptr = NULL;
     struct minmea_sentence_gga frame;
 
@@ -282,15 +282,14 @@ int main(void)
 
         // Critical section. Disable interrupts just in case.
         disable_gps_interrupt();
-        memcpy((void*)parse_buffer, (void*)sentence, sizeof(sentence));
-        memset((void*)sentence, 0, sizeof(sentence));
+        memcpy((void*)parse_buffer, (void*)sentence, idx);
+        memset((void*)sentence, 0, idx);
         ready = false;
         enable_gps_interrupt();
 
         if (minmea_parse_gga(&frame, parse_buffer))
         {
-            snprintf(stream_buffer, sizeof(stream_buffer), "lat: %d, long: %d\r\n\0", frame.latitude.value, frame.longitude.value);
-            stream_ptr = stream_buffer;
+            stream_ptr = parse_buffer;
 
             while (*stream_ptr != '\0')
             {
