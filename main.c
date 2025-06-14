@@ -1,108 +1,39 @@
-#include <SysTick.h>
-
-// AHB enable register
-#define SYSCTL_GPIOHBCTL_R *(volatile uint32_t*) 0x400FE06C 
-
-// UART clock enable
-#define RCGCUART_R *(volatile uint32_t *) 0x400FE618
-
-// GPIO clock enable
-#define RCGCGPIO_R *(volatile uint32_t *) 0x400FE608
-
-// Digital enable register
-#define GPIODEN_A_R *(volatile uint32_t *) 0x4005851C
-#define GPIODEN_B_R *(volatile uint32_t *) 0x4005951C
-
-// Clock source config register
-#define UARTCC_A_R *(volatile uint32_t *) 0x4000CFC8
-#define UARTCC_B_R *(volatile uint32_t *) 0x4000DFC8
-
-// 2 mA drive select
-#define GPIODR2R_A_R *(volatile uint32_t *) 0x40058500
-#define GPIODR2R_B_R *(volatile uint32_t *) 0x40059500
-
-// Alternate function select register
-#define GPIOAFSEL_A_R *(volatile uint32_t *) 0x40058420
-#define GPIOAFSEL_B_R *(volatile uint32_t *) 0x40059420
-#define UART1_RX 0x1
-#define UART1_TX 0x2
-
-// GPIO port control register
-#define GPIOPCTL_A_R *(volatile uint32_t *) 0x4005852C
-#define GPIOPCTL_B_R *(volatile uint32_t *) 0x4005952C
-#define PMC0_UART 0x01
-#define PMC1_UART 0x10
-
-// UART control register
-#define UARTCTL_A_R *(volatile uint32_t *) 0x4000C030
-#define UARTCTL_B_R *(volatile uint32_t *) 0x4000D030
-#define RXE_B 0x200
-#define TXE_B 0x100
-
-// UART line control register
-#define UARTLCRH_A_R *(volatile uint32_t *) 0x4000C02C
-#define UARTLCRH_B_R *(volatile uint32_t *) 0x4000D02C
-#define UART_FEN_EN 0x10
-#define UART_FEN_DI ~(0x10)
-
-// Baud rate generation
-#define UARTIBRD_A_R *(volatile uint32_t *) 0x4000C024 // integer piece
-#define UARTFBRD_A_R *(volatile uint32_t *) 0x4000C028 // fractional piece
-#define UARTIBRD_B_R *(volatile uint32_t *) 0x4000D024 // integer piece
-#define UARTFBRD_B_R *(volatile uint32_t *) 0x4000D028 // fraction piece
-
-// UART Interrupt setup
-#define UARTIM_B_R *(volatile uint32_t *) 0x4000D038 // UART1 Interrupt mask enable 
-#define RXIM 0x20 // Receive interrupt mask
-#define UARTIFLS_B_R *(volatile uint32_t *) 0x4000D034 // UART1 FIFO interrupt trigger level 
-#define NVIC_EN0_R *(volatile uint32_t *) 0xE000E100 // NVIC EN0 register
-#define UART1_RXEN 0x40 // UART1 RX interrupt
-#define UARTICR_B_R *(volatile uint32_t *) 0x4000D044 // interrupt clear register
-
-// FIFO registers
-#define UARTFR_0_R *(volatile uint32_t *) 0x4000C018
-#define UARTDR_0_R *(volatile uint32_t *) 0x4000C000
-#define UARTFR_1_R *(volatile uint32_t *) 0x4000D018
-#define UARTDR_1_R *(volatile uint32_t *) 0x4000D000
-
-// Peripheral status registers
-#define PRUART_R *(volatile uint32_t *) 0x400FEA18
-#define PRGPIO_R *(volatile uint32_t *) 0x400FEA08
-
-#define STCTRL *(volatile uint32_t*) 0xE000E010 // control register for the SysTick timer
-#define STRELOAD *(volatile uint32_t*) 0xE000E014 // the reload value. this is how many clock cycles elapse before it is reset
-#define STCURRENT *(volatile uint32_t*) 0xE000E018 // the value of the register currently. writes clear the register and the count status bit
-#define COUNTMASK 0x00010000 // Access the 16th bit (count bit) of STCTRL
-#define CYCLESPMS 16000 // 16,000,000 cycles per second * 0.001 seconds per millisecond
-#define MAXCYCLES 0xFFFFFF // number of cycles we can represent with 23 bits
+#include <systick.h>
+#include <registers.h>
 
 static volatile bool ready = false;
 static volatile char sentence[128];
 static volatile uint8_t idx = 0;
 
+/* 
+*  Purpose: Respond to RX interrupts on the UART1 module. State-machine-esque handling to ensure full sentences are parsed.
+*  Parameters: void
+*  Returns: void
+*  Assumes: Sentences are formatted per NMEA 0183 V4.10. Assumes a sentence begins with '$', ends with '\n', and no '\n' is encountered until the end of a sentence.
+*/
 void UART1_handler(void)
 {
     static bool capturing = false;
     static uint8_t next_byte;
 
-    while (!ready && !(UARTFR_1_R & 0x10))
+    while (!ready && !(UARTFR_1_R & 0x10)) // Until we have received a full sentence or drained the FIFO
     {
         next_byte = UARTDR_1_R;
 
-        if (capturing) 
+        if (capturing) // We have already started reading a sentence
         {
-            if (next_byte == '\n')
+            if (next_byte == '\n') // If the sentence is over, tell the main loop and reset the state of the handler
             {
                 sentence[idx++] = '\0';
                 capturing = false;
                 ready = true;
             }
-            else 
+            else // Otherwise, ingest this byte
             {
                 sentence[idx++] = (char)next_byte;
             }
         }
-        else if (next_byte == '$')
+        else if (next_byte == '$') // We are just beginning to read a sentence
         {
             idx = 0;
             sentence[idx++] = (char)next_byte;
@@ -113,9 +44,15 @@ void UART1_handler(void)
     UARTICR_B_R |= 0x10;
 }
 
+/* 
+*  Purpose: Configure the GPS module to output GGA sentences
+*  Parameters: void
+*  Returns: void
+*  Assumes: Assumes that the ACK response is sent within 1ms of receiving the last byte. Not super important because we filter by sentence type in the main loop.
+*/
 void configure_gps_output(void)
 {
-    char* config[] = 
+    char* config[] = // Disable every sentence except GGA
     {
         "$PAIR062,0,1*3F\r\n\0",
         "$PAIR062,1,0*3F\r\n\0",
@@ -129,17 +66,16 @@ void configure_gps_output(void)
         "$PAIR062,9,0*37\r\n\0"
     };
 
-    int i;
     char* current_config;
-    volatile uint8_t discard;
+    uint8_t discard;
 
-    for (i = 0;i < 10;i++)
+    for (int i = 0;i < 10;i++) // Send the desired config for each sentence
     {
         current_config = config[i];
 
         while (*current_config != '\0')
         {
-            while (UARTFR_1_R & 0x20); // wait until room
+            while (UARTFR_1_R & 0x20); 
 
             UARTDR_1_R = (uint8_t)*current_config;
 
@@ -148,6 +84,8 @@ void configure_gps_output(void)
 
         while (!(UARTFR_1_R & 0x80)); // wait until last byte sent
 
+        delayByMs(1);
+
         while (!(UARTFR_1_R & 0x10))
         {
             discard = UARTDR_1_R; // Discard the ACK
@@ -155,6 +93,12 @@ void configure_gps_output(void)
     }
 }
 
+/* 
+*  Purpose: Initialize the UART module attached to the GPS
+*  Parameters: void
+*  Returns: void
+*  Assumes: nothing
+*/
 void init_gps(void)
 {
     // Enable UART module 1
@@ -209,6 +153,12 @@ void init_gps(void)
     UARTCTL_B_R |= 0x301; 
 }
 
+/* 
+*  Purpose: Initialize the UART module attached to the on-board ICDI (UART0)
+*  Parameters: void
+*  Returns: void
+*  Assumes: nothing
+*/
 void init_serial_output(void)
 {
     // Enable UART module 0
@@ -255,16 +205,34 @@ void init_serial_output(void)
     UARTCTL_A_R |= 0x301;
 }
 
+/* 
+*  Purpose: Disable interrupts on UART1
+*  Parameters: void
+*  Returns: void
+*  Assumes: nothing
+*/
 void enable_gps_interrupt(void)
 {
     UARTIM_B_R |= 0x10;
 }
 
+/* 
+*  Purpose: Enable interrupts on UART1
+*  Parameters: void
+*  Returns: void
+*  Assumes: nothing
+*/
 void disable_gps_interrupt(void)
 {
     UARTIM_B_R &= ~0x10;
 }
 
+/* 
+*  Purpose: Initialize the UART ports, then poll for sentences buffered by the interrupt handler
+*  Parameters: void
+*  Returns: void
+*  Assumes: Copying the buffer can take place before the next sentence is sent a second later
+*/
 int main(void)
 {
     init_gps();
@@ -278,22 +246,21 @@ int main(void)
 
     while (1)
     {
-        while (ready == 0);
+        while (ready == 0); // Wait until the interrupt handler has buffered a full sentence
 
-        // Critical section. Disable interrupts just in case.
-        disable_gps_interrupt();
-        memcpy((void*)parse_buffer, (void*)sentence, idx);
-        memset((void*)sentence, 0, idx);
+        disable_gps_interrupt(); // Enter critical section. Risk of data loss, but safer than stomping on shared memory.
+        memcpy((void*)parse_buffer, (void*)sentence, idx); // Copy the sentence over to give us a little extra time to parse
+        memset((void*)sentence, 0, idx); // Reset the buffer
         ready = false;
-        enable_gps_interrupt();
+        enable_gps_interrupt(); // Exit critical section
 
-        if (minmea_parse_gga(&frame, parse_buffer))
+        if (minmea_parse_gga(&frame, parse_buffer)) // Occassionally we get status messages from the GPS. Ignore those.
         {
             stream_ptr = parse_buffer;
 
             while (*stream_ptr != '\0')
             {
-                while (UARTFR_0_R & 0x20); // Wait for TX FIFO to be not full
+                while (UARTFR_0_R & 0x20);
 
                 UARTDR_0_R = *stream_ptr;
 
