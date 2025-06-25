@@ -44,9 +44,8 @@ Approach 1: In the ISR, timestamp each byte, and monitor for a 'significant' amo
 Why not: I didn't like the idea of relying on some fuzzy notion of expected latency to mark the end of an event. It's nondeterministic: anything that interferes with the transmission of a bit could potentially throw off the entire program.
 
 Approach 2: In the main loop, periodically attempt to parse whatever is in the buffer. 
-Why not: There is no concurrency control here. The ISR could potentially interrupt the main loop in the middle of a non-atomic instruction and modify something that is being read, which could break parsing.
+Why not: There is no concurrency control here. The ISR could potentially interrupt the main loop in the middle of a non-atomic instruction and modify something that is being read, which could break parsing. It's also very inefficient: why parse before you know there's something to parse?
 
 Approach 3: Use a state machine to track when a complete sentence has been read, and set a flag telling the main loop that it can go read the data. 
 
-As the code suggests, I decided to go with approach 3. There are still weaknesses to this approach, the main one being it assumes that we can always parse and transmit a full sentence within the update interval of the GPS (1 hZ by default). I mitigated this by disabling interrupts
-while processing the buffer. This comes with the possibility of data loss, but I figured that was a better outcome than potentially corrupting memory or logging a malformed sentence. 
+I went with the third approach because it offered lightweight buffering without sacrificing consistency or performance like the other approaches. It still has weaknesses, the main one being it assumes that we can always parse and transmit a full sentence within the update interval of the GPS (1 hZ by default). I mitigated this by disabling interrupts while processing the buffer. This comes with the possibility of data loss, but I figured that was a better outcome than potentially corrupting memory or logging a malformed sentence. 
