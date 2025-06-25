@@ -15,8 +15,8 @@ void UART1_handler(void)
 {
     static bool capturing = false;
     static uint8_t next_byte;
-
-    while (!ready && !(UARTFR_1_R & 0x10)) // Until we have received a full sentence or drained the FIFO
+    
+    while (!(UARTFR_1_R & 0x10)) // Until we have received a full sentence or drained the FIFO
     {
         next_byte = UARTDR_1_R;
 
@@ -27,6 +27,8 @@ void UART1_handler(void)
                 sentence[idx++] = '\0';
                 capturing = false;
                 ready = true;
+                UARTIM_B_R &= ~0x10; // Immediately disable interrupts to avoid capturing the next sentence prematurely
+                break;
             }
             else // Otherwise, ingest this byte
             {
@@ -206,7 +208,7 @@ void init_serial_output(void)
 }
 
 /* 
-*  Purpose: Disable interrupts on UART1
+*  Purpose: Enable interrupts on UART1
 *  Parameters: void
 *  Returns: void
 *  Assumes: nothing
@@ -217,7 +219,7 @@ void enable_gps_interrupt(void)
 }
 
 /* 
-*  Purpose: Enable interrupts on UART1
+*  Purpose: Disable interrupts on UART1
 *  Parameters: void
 *  Returns: void
 *  Assumes: nothing
@@ -246,14 +248,14 @@ int main(void)
 
     while (1)
     {
-        while (ready == 0); // Wait until the interrupt handler has buffered a full sentence
+        while (ready == false); // Wait until the interrupt handler has buffered a full sentence
 
         disable_gps_interrupt(); // Enter critical section. Risk of data loss, but safer than stomping on shared memory.
         memcpy((void*)parse_buffer, (void*)sentence, idx); // Copy the sentence over to give us a little extra time to parse
         memset((void*)sentence, 0, idx); // Reset the buffer
         ready = false;
         enable_gps_interrupt(); // Exit critical section
-
+       
         if (minmea_parse_gga(&frame, parse_buffer)) // Occassionally we get status messages from the GPS. Ignore those.
         {
             stream_ptr = parse_buffer;
