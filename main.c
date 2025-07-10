@@ -1,7 +1,7 @@
 #include <systick.h>
 #include <registers.h>
 
-static volatile bool ready = false;
+static volatile bool buffer_surrendered = false;
 static volatile char sentence[128];
 static volatile uint8_t idx = 0;
 
@@ -16,9 +16,11 @@ void UART1_handler(void)
     static bool capturing = false;
     static uint8_t next_byte;
     
-    while (!(UARTFR_1_R & 0x10)) // Until we have received a full sentence or drained the FIFO
+    while (!(UARTFR_1_R & 0x10)) // Until we have drained the FIFO
     {
         next_byte = UARTDR_1_R;
+
+        if (buffer_surrendered) continue; // If we have read a full sentence and passed flow back to the polling loop, discard everything
 
         if (capturing) // We have already started reading a sentence
         {
@@ -26,8 +28,7 @@ void UART1_handler(void)
             {
                 sentence[idx++] = '\0';
                 capturing = false;
-                ready = true;
-                UARTIM_B_R &= ~0x10; // Immediately disable interrupts to avoid capturing the next sentence prematurely
+                buffer_surrendered = true;
                 break;
             }
             else // Otherwise, ingest this byte
@@ -248,12 +249,12 @@ int main(void)
 
     while (1)
     {
-        while (ready == false); // Wait until the interrupt handler has buffered a full sentence
+        while (buffer_surrendered == false); // Wait until the interrupt handler has buffered a full sentence
 
         disable_gps_interrupt(); // Enter critical section. Risk of data loss, but safer than stomping on shared memory.
         memcpy((void*)parse_buffer, (void*)sentence, idx); // Copy the sentence over to give us a little extra time to parse
         memset((void*)sentence, 0, idx); // Reset the buffer
-        ready = false;
+        buffer_surrendered = false;
         enable_gps_interrupt(); // Exit critical section
        
         if (minmea_parse_gga(&frame, parse_buffer)) // Occassionally we get status messages from the GPS. Ignore those.
